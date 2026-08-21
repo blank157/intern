@@ -1,0 +1,7 @@
+{
+  "sample_id": "sample_02",
+  "image_file": "sample_02.png",
+  "ground_truth_text": "Photosynthesis is the procees by which green plants convurt sunlight into chemical energy.",
+  "known_misspellings": ["procees", "convurt"],
+  "notes": "Biology answer with spelling mistakes."
+}

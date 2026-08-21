@@ -1,0 +1,7 @@
+{
+  "sample_id": "sample_01",
+  "image_file": "sample_01.png",
+  "ground_truth_text": "The protocall is use for comunication between clients and servers.",
+  "known_misspellings": ["protocall", "comunication"],
+  "notes": "Handwritten network protocol answer with intentional student spelling errors."
+}
