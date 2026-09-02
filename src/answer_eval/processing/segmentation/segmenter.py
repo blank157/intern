@@ -147,10 +147,10 @@ def _compute_structural_diagram_score(
     debug = {
         "ink_ratio": round(ink_ratio, 3),
         "red_fraction": round(red_fraction, 3),
-        "text_row_density": round(text_row_density, 3),
-        "n_comps": n_comps,
-        "large_enclosed_shapes": large_enclosed_shapes,
-        "closed_shapes": closed_shapes,
+        "text_row_density": float(round(text_row_density, 3)),
+        "n_comps": int(n_comps),
+        "large_enclosed_shapes": int(large_enclosed_shapes),
+        "closed_shapes": int(closed_shapes),
         "spatial_spread_score": round(spatial_spread_score, 3),
     }
 
@@ -416,12 +416,22 @@ class QuestionSegmenter:
 
             regions: list[QuestionRegion] = []
             has_diagrams = False
+            prev_y_max_px = 0
 
             for idx, (y_start, y_end) in enumerate(splits, start=1):
-                # Add small vertical padding (1.5%)
+                # Small vertical padding (1.5%) — but a padded region must never
+                # bleed into the ink band of its neighbor, otherwise adjacent
+                # crops duplicate the same lines at their shared boundary (which
+                # makes OCR read continuation lines twice). Padding is therefore
+                # clamped to the previous region's end and the next band's start,
+                # and a forward monotonicity pass keeps the sequence non-overlapping.
                 pad_y = int(h * 0.015)
-                y_min_px = max(0, y_start - pad_y)
-                y_max_px = min(h, y_end + pad_y)
+                next_band_start = splits[idx][0] if idx < len(splits) else h
+                y_min_px = max(prev_y_max_px, y_start - pad_y)
+                y_max_px = min(next_band_start, y_end + pad_y)
+                if y_max_px < y_min_px:
+                    y_max_px = y_min_px  # degenerate sliver: collapse, never invert
+                prev_y_max_px = y_max_px
 
                 bbox = BoundingBox(
                     x_min=0.0,

@@ -86,6 +86,29 @@ def test_margin_scan_detects_anchor_rows(tmp_path) -> None:
     assert 0.65 < boxes[1][0] < 0.75
 
 
+def test_margin_scan_ignores_full_height_margin_rule(tmp_path) -> None:
+    """A full-height vertical rule in the left band must not fuse all anchors.
+
+    Scanned sheets have a printed margin line spanning every row; without
+    removing it, ``detect_anchor_boxes`` collapses the whole band into one
+    giant box and the mapper finds no question markers at all.
+    """
+    image = Image.new("RGB", (1000, 2000), "white")
+    draw = ImageDraw.Draw(image)
+    # Two anchor blobs in the left band.
+    for y in (300, 1400):
+        draw.rectangle([20, y, 130, y + 60], fill="black")
+    # Full-height vertical rule just right of the anchors.
+    draw.rectangle([150, 0, 152, 2000], fill="black")
+    page = tmp_path / "rule.png"
+    image.save(page)
+
+    boxes = detect_anchor_boxes(str(page))
+    assert len(boxes) == 2, f"expected 2 anchors, got {len(boxes)}: {boxes}"
+    assert 0.10 < boxes[0][0] < 0.22
+    assert 0.65 < boxes[1][0] < 0.75
+
+
 def test_build_line_observations_aligns_texts_by_count(tmp_path) -> None:
     page = tmp_path / "p1.png"
     draw_anchor_page(page, [300, 1400])

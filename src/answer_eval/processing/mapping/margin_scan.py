@@ -40,6 +40,17 @@ def detect_anchor_boxes(
     band = gray[:, :band_width]
 
     _, binary = cv2.threshold(band, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+    # Full-height margin rules / scan borders put ink on EVERY row of the band
+    # and collapse all anchors into one giant box (which then yields zero
+    # question markers and silently degrades mapping to positional fallbacks).
+    # Remove only structures that span a large fraction of the page (a ruled
+    # margin line), while keeping short anchor blobs (question digits, typical
+    # handwriting rows) intact.
+    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, max(60, height // 4)))
+    vertical = cv2.morphologyEx(binary, cv2.MORPH_OPEN, vertical_kernel)
+    binary = cv2.subtract(binary, vertical)
+
     # Merge characters of the same line vertically.
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(3, band_width // 12), max(3, height // 150)))
     merged = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)

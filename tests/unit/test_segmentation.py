@@ -150,3 +150,56 @@ def test_classify_genuine_diagram(temp_workspace: Path) -> None:
 
     assert region_type == RegionType.DIAGRAM
     assert conf >= 0.70
+
+
+def _prep_page_from_image(img: Image.Image, temp_workspace: Path, *, page_number: int = 1) -> PreprocessedPage:
+    """Build a PreprocessedPage around a raw image for segmentation tests."""
+    img_path = temp_workspace / f"prep_p{page_number}.png"
+    img.save(img_path)
+    return PreprocessedPage(
+        submission_id="SUB-01",
+        page_number=page_number,
+        original_image_path=str(img_path),
+        original_page_hash=f"orig_hash_p{page_number}",
+        preprocessed_image_path=str(img_path),
+        preprocessed_page_hash=f"prep_hash_p{page_number}",
+        width_px=img.width,
+        height_px=img.height,
+        quality_metrics=ImageQualityMetrics(
+            blur_score=150.0,
+            brightness_score=200.0,
+            contrast_score=50.0,
+        ),
+    )
+
+
+def test_regions_never_overlap_adjacent_bands(temp_workspace: Path) -> None:
+    """Adjacent region crops must not overlap at their shared boundary.
+
+    The old per-band padding (1.5% on BOTH edges, independently) made regions
+    that are separated by a narrow whitespace gap bleed into each other, so OCR
+    read the same lines at the boundary twice. Boundaries must stay contiguous
+    even when content bands are close together.
+    """
+    img = Image.new("RGB", (800, 1600), color=(255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    # Four content clusters: two tight multi-line groups with small gaps.
+    bands = [(300, 420), (470, 590), (900, 1010), (1090, 1300)]
+    for group_idx, (y0, y1) in enumerate(bands, start=1):
+        y = y0
+        while y <= y1:
+            draw.line([(150, y), (650, y)], fill=(10, 10, 10), width=8)
+            y += 50
+
+    prep_page = _prep_page_from_image(img, temp_workspace)
+    segmenter = QuestionSegmenter(crops_output_dir=temp_workspace / "crops")
+    result = segmenter.segment_page(prep_page)
+
+    assert len(result.regions) >= 2
+    ordered = sorted(result.regions, key=lambda r: (r.bbox.y_min, r.reading_order))
+    for prev, nxt in zip(ordered, ordered[1:], strict=False):
+        assert nxt.bbox.y_min >= prev.bbox.y_max, (
+            f"{prev.region_id} ({prev.bbox.y_min:.3f}-{prev.bbox.y_max:.3f}) overlaps "
+            f"{nxt.region_id} ({nxt.bbox.y_min:.3f}-{nxt.bbox.y_max:.3f})"
+        )
+        assert nxt.bbox.y_max > nxt.bbox.y_min  # never a degenerate/inverted band
