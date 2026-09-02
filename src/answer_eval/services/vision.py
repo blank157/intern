@@ -4,6 +4,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from answer_eval.core.config import load_settings
 from answer_eval.core.errors import VisionRequestError
 from answer_eval.core.logging import get_logger
 from answer_eval.inference.factory import create_inference_provider
@@ -84,16 +85,19 @@ class VisionService:
         """
         Execute exact verbatim OCR transcription using the strict OCR prompt.
         Preserves all spelling, formatting, and inserts uncertainty markers.
+        Generation budget and temperature come from the centralized OCR config
+        (settings: ocr.num_predict / ocr.temperature).
         """
         prompt = custom_prompt or self.prompt_manager.get_prompt_template("ocr")
+        ocr_cfg = load_settings().ocr
         image_input = self._prepare_image_input(image)
 
         req = InferenceRequest(
             request_id=f"ocr-{uuid.uuid4().hex[:8]}",
             prompt=prompt,
             images=[image_input],
-            temperature=0.0,
-            max_tokens=2048,
+            temperature=ocr_cfg.temperature,
+            max_tokens=ocr_cfg.num_predict,
             reasoning_mode=ReasoningMode.DIRECT,
         )
 

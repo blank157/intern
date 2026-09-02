@@ -1,0 +1,22 @@
+/**
+ * STYLE: Reference-led soft glass action dock — the reference prompt module becomes OCR-specific document onboarding controls.
+ */
+import { FolderOpen, History, ScanText, Upload, WandSparkles } from "lucide-react";
+import { ChangeEvent, useRef, useState } from "react";
+import { toast } from "sonner";
+import { useLocation } from "wouter";
+
+export function ActionDock() {
+  const [, setLocation] = useLocation();
+  const [documentName, setDocumentName] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const chooseDocument = (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = event.target.files?.[0];
+    if (!selected) return;
+    setDocumentName(selected.name);
+    toast("Document selected", { description: `${selected.name} is ready to open in the OCR workspace.` });
+    event.target.value = "";
+  };
+  const visitFuture = () => toast("Feature coming soon", { description: "History will become available when saved evaluations are connected." });
+  return <section id="actions" className="mx-auto mt-16 max-w-[680px] rounded-[22px] border border-white/90 bg-white/58 p-2.5 shadow-[0_18px_42px_rgba(60,70,135,0.12)] backdrop-blur-xl dark:border-white/10 dark:bg-[#222638]/72"><div className="flex items-center justify-between px-2 py-1.5 text-[10px] font-medium tracking-[-0.012em] text-slate-500 dark:text-slate-400"><span className="inline-flex items-center gap-1.5"><WandSparkles className="h-3 w-3 text-[#7182ef]" />Start with a document or explore the workspace</span><span>Powered by OCR Eval</span></div><div className="rounded-[17px] border border-white/90 bg-white/88 p-3.5 shadow-sm dark:border-white/10 dark:bg-[#171927]/90"><div className="flex items-center gap-3 border-b border-slate-100 pb-3.5 dark:border-white/10"><button type="button" onClick={() => inputRef.current?.click()} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-dashed border-[#c4cdfc] bg-[#f4f5ff] text-[#6679e7] hover:bg-[#e9edff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7788ff] dark:border-[#8b9aff]/25 dark:bg-[#7486ed]/15 dark:text-[#b7c0ff]"><Upload className="h-4 w-4" /></button><div className="min-w-0"><p className="type-card-title text-[13px] text-[#171827] dark:text-white">{documentName ?? "Choose a document to begin"}</p><p className="type-support mt-1 truncate text-slate-500 dark:text-slate-400">{documentName ? "Ready for workspace intake" : "PDF, image, or text files can be prepared here."}</p></div><button type="button" onClick={() => setLocation("/compare")} className="type-button ml-auto hidden rounded-full bg-[#171b32] px-3 py-2 text-white transition-colors hover:bg-[#30386d] dark:bg-[#9aa8ff] dark:text-[#151827] sm:block">Open</button><input ref={inputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.txt" className="hidden" onChange={chooseDocument} /></div><div className="mt-3.5 flex flex-wrap gap-2"><button type="button" onClick={() => inputRef.current?.click()} className="type-button inline-flex items-center gap-1.5 rounded-full bg-[#171b32] px-3.5 py-2 text-white transition-colors hover:bg-[#30386d] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7788ff] dark:bg-[#9aa8ff] dark:text-[#151827]"><Upload className="h-3.5 w-3.5" />Upload document</button><button type="button" onClick={() => setLocation("/compare")} className="type-button inline-flex items-center gap-1.5 rounded-full bg-[#171b32] px-3.5 py-2 text-white transition-colors hover:bg-[#30386d] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7788ff] dark:bg-[#9aa8ff] dark:text-[#151827]"><ScanText className="h-3.5 w-3.5" />Run accuracy check</button><button type="button" onClick={visitFuture} className="type-button inline-flex items-center gap-1.5 rounded-full bg-[#171b32] px-3.5 py-2 text-white transition-colors hover:bg-[#30386d] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7788ff] dark:bg-[#9aa8ff] dark:text-[#151827]"><History className="h-3.5 w-3.5" />View history</button><button type="button" onClick={() => setLocation("/compare")} className="type-button inline-flex items-center gap-1.5 rounded-full bg-[#171b32] px-3.5 py-2 text-white transition-colors hover:bg-[#30386d] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#7788ff] dark:bg-[#9aa8ff] dark:text-[#151827]"><FolderOpen className="h-3.5 w-3.5" />Workspace</button></div></div></section>;
+}

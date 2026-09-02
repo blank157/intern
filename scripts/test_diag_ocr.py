@@ -1,9 +1,9 @@
 """Diagnostic script: test Qwen3-VL OCR on real region crops and inspect segmentation."""
 
 import asyncio
-import json
 import sys
 from pathlib import Path
+
 import httpx
 from PIL import Image
 
@@ -37,7 +37,7 @@ async def test_direct_qwen():
     )
 
     # Prompt 2: Full base.txt prompt
-    with open("src/answer_eval/prompts/templates/ocr/base.txt", "r", encoding="utf-8") as f:
+    with open("src/answer_eval/prompts/templates/ocr/base.txt", encoding="utf-8") as f:
         full_prompt = f.read()
 
     async with httpx.AsyncClient(base_url="http://localhost:11434/v1", timeout=60.0) as client:
@@ -57,7 +57,7 @@ async def test_direct_qwen():
             "temperature": 0.0,
             "stream": False,
         }
-        
+
         print("\n--- Sending request with SHORT prompt ---")
         try:
             resp = await client.post("/chat/completions", json=payload_short)
@@ -88,7 +88,7 @@ async def test_direct_qwen():
             "temperature": 0.0,
             "stream": False,
         }
-        
+
         print("\n--- Sending request with FULL prompt ---")
         try:
             resp = await client.post("/chat/completions", json=payload_full)

@@ -10,7 +10,7 @@ from answer_eval.core.errors import (
     VisionRequestError,
 )
 from answer_eval.inference.ollama_provider import OllamaProvider, _encode_image_to_data_uri
-from answer_eval.inference.types import ImageInput, InferenceRequest
+from answer_eval.inference.types import ImageInput, InferenceRequest, ReasoningMode
 from answer_eval.services.vision import VisionService
 
 
@@ -73,23 +73,110 @@ async def test_ollama_detailed_health_check_model_missing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ollama_infer_success() -> None:
+async def test_provider_consumes_ocr_config_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Provider must read num_ctx/num_predict from configuration, not literals."""
+    monkeypatch.setenv("OLLAMA_OCR_NUM_CTX", "32768")
+    monkeypatch.setenv("OLLAMA_OCR_NUM_PREDICT", "8192")
+
     provider = OllamaProvider(base_url="http://127.0.0.1:11434/v1", model_name="qwen3-vl:4b")
 
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.json.return_value = {
-        "choices": [{"message": {"content": "QWEN_CONNECTION_OK"}}],
+        "message": {"content": "OK"},
+        "prompt_eval_count": 5,
+        "eval_count": 1,
+        "done_reason": "stop",
+    }
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = mock_resp
+        # max_tokens unset -> generation budget comes from configuration
+        req = InferenceRequest(request_id="req-env", prompt="Hello")
+        await provider.infer(req)
+
+        sent_payload = mock_post.call_args.kwargs["json"]
+        assert sent_payload["options"]["num_ctx"] == 32768
+        assert sent_payload["options"]["num_predict"] == 8192
+
+
+@pytest.mark.asyncio
+async def test_provider_defaults_match_working_configuration() -> None:
+    """With no overrides the effective request must match the tested defaults."""
+    provider = OllamaProvider(base_url="http://127.0.0.1:11434/v1", model_name="qwen3-vl:4b")
+    assert provider._ocr_cfg.num_ctx == 16384
+    assert provider._ocr_cfg.num_predict == 4096
+    assert provider._ocr_cfg.temperature == 0.0
+    # Empty ocr.model inherits the globally configured model
+    assert provider._resolve_ocr_model() == "qwen3-vl:4b"
+
+
+@pytest.mark.asyncio
+async def test_ollama_infer_success_native_direct_think_disabled() -> None:
+    """DIRECT mode (OCR default) must hit native /api/chat with think=false."""
+    provider = OllamaProvider(base_url="http://127.0.0.1:11434/v1", model_name="qwen3-vl:4b")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "message": {"content": "QWEN_CONNECTION_OK"},
+        "prompt_eval_count": 10,
+        "eval_count": 5,
+        "done_reason": "stop",
+    }
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = mock_resp
+        req = InferenceRequest(request_id="req-1", prompt="Hello", max_tokens=4096)
+        resp = await provider.infer(req)
+        assert resp.text == "QWEN_CONNECTION_OK"
+        assert resp.usage.total_tokens == 15
+        assert resp.provider == "ollama"
+        assert resp.stop_reason == "stop"
+        assert resp.thinking_disabled is True
+
+        # Native endpoint used, thinking explicitly disabled, budget forwarded
+        called_url = mock_post.call_args.args[0]
+        assert called_url.endswith("/api/chat")
+        sent_payload = mock_post.call_args.kwargs["json"]
+        assert sent_payload["think"] is False
+        assert sent_payload["options"]["num_predict"] == 4096
+        assert sent_payload["options"]["temperature"] == 0.1
+
+        # Assistant prefill with closed <think> block forces direct transcription
+        roles = [m["role"] for m in sent_payload["messages"]]
+        assert roles[-1] == "assistant"
+        assert "<think>" in sent_payload["messages"][-1]["content"]
+        assert "</think>" in sent_payload["messages"][-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_ollama_infer_compat_path_normal_mode() -> None:
+    """NORMAL mode keeps using the OpenAI-compatible /v1/chat/completions API."""
+    provider = OllamaProvider(base_url="http://127.0.0.1:11434/v1", model_name="qwen3-vl:4b")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "choices": [{"message": {"content": "COMPAT_OK"}, "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
     }
 
     with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
         mock_post.return_value = mock_resp
-        req = InferenceRequest(request_id="req-1", prompt="Hello")
+        req = InferenceRequest(
+            request_id="req-2",
+            prompt="Hello",
+            reasoning_mode=ReasoningMode.NORMAL,
+        )
         resp = await provider.infer(req)
-        assert resp.text == "QWEN_CONNECTION_OK"
-        assert resp.usage.total_tokens == 15
-        assert resp.provider == "ollama"
+        assert resp.text == "COMPAT_OK"
+        assert resp.stop_reason == "stop"
+
+        called_url = mock_post.call_args.args[0]
+        assert called_url.endswith("/chat/completions")
+        sent_payload = mock_post.call_args.kwargs["json"]
+        assert "think" not in sent_payload
 
 
 @pytest.mark.asyncio
@@ -102,9 +189,12 @@ async def test_vision_service_methods(temp_workspace: Path, sample_image: Image.
 
     mock_resp = MagicMock()
     mock_resp.status_code = 200
+    # VisionService uses ReasoningMode.DIRECT -> native /api/chat response format
     mock_resp.json.return_value = {
-        "choices": [{"message": {"content": "The protocall is use for comunication"}}],
-        "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+        "message": {"content": "The protocall is use for comunication"},
+        "prompt_eval_count": 20,
+        "eval_count": 10,
+        "done_reason": "stop",
     }
 
     with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:

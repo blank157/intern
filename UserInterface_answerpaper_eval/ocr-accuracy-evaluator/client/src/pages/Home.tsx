@@ -1,0 +1,10 @@
+/**
+ * STYLE: Reference-led soft glass landing page — a premium EvalAI assessment platform introduction, not a test dashboard or chat home.
+ */
+import { CheckCircle2, FileCheck2, ScanLine, Sparkles } from "lucide-react";
+import { FeatureGrid } from "@/components/home/FeatureGrid";
+import { HeroSection } from "@/components/home/HeroSection";
+
+export default function Home() {
+  return <div className="mx-auto max-w-[1270px] pb-6"><HeroSection /><FeatureGrid /><section className="mx-auto mt-12 grid max-w-[940px] gap-3 sm:grid-cols-3"><article className="rounded-2xl border border-white/80 bg-white/54 p-4 backdrop-blur dark:border-white/10 dark:bg-white/5"><ScanLine className="h-4 w-4 text-[#7486ed]" /><h2 className="type-card-title mt-3 text-[#171827] dark:text-white">Set the assessment</h2><p className="type-support mt-1.5 text-slate-500 dark:text-slate-400">Bring the question paper, marking scheme, and student responses into one review flow.</p></article><article className="rounded-2xl border border-white/80 bg-white/54 p-4 backdrop-blur dark:border-white/10 dark:bg-white/5"><FileCheck2 className="h-4 w-4 text-[#5b9a78]" /><h2 className="type-card-title mt-3 text-[#171827] dark:text-white">Keep teachers in control</h2><p className="type-support mt-1.5 text-slate-500 dark:text-slate-400">Review evaluation context and answers that need attention before marks are finalized.</p></article><article className="rounded-2xl border border-white/80 bg-white/54 p-4 backdrop-blur dark:border-white/10 dark:bg-white/5"><Sparkles className="h-4 w-4 text-[#c18a2d]" /><h2 className="type-card-title mt-3 text-[#171827] dark:text-white">Share clear results</h2><p className="type-support mt-1.5 text-slate-500 dark:text-slate-400">Prepare consistent marks, feedback, and result records for your assessment workflow.</p></article></section><p className="mt-8 flex items-center justify-center gap-2 text-center text-[12px] font-medium tracking-[-0.012em] text-slate-500 dark:text-slate-400"><CheckCircle2 className="h-3.5 w-3.5 text-[#5b9a78]" />A measured assessment workspace for answer evaluation, teacher review, and results.</p></div>;
+}

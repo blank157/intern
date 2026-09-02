@@ -1,10 +1,9 @@
 """Deep inspection of Qwen3-VL response on region crop."""
 
 import base64
-import json
 import sys
-import time
 from pathlib import Path
+
 import httpx
 
 sys.stdout.reconfigure(encoding="utf-8")

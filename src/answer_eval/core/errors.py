@@ -143,6 +143,48 @@ class ReconstructionError(AnswerEvalError):
 
 
 # ---------------------------------------------------------------------------
+# Grading Errors (Modules 12-16)
+# ---------------------------------------------------------------------------
+class GradingError(AnswerEvalError):
+    """Base error for grading modules."""
+
+
+class RubricValidationError(GradingError):
+    """Raised when a question rubric / answer key is invalid."""
+
+
+class EvaluationValidationError(GradingError):
+    """Raised when an evaluation/verification result fails structural or score validation."""
+
+
+class StrictnessPolicyError(GradingError):
+    """Raised for invalid strictness scores or policy overrides."""
+
+
+class RiskEngineError(GradingError):
+    """Raised when the confidence/risk engine receives inconsistent inputs."""
+
+
+# ---------------------------------------------------------------------------
+# Jobs / Workflow Errors (Modules 17-18)
+# ---------------------------------------------------------------------------
+class WorkflowError(AnswerEvalError):
+    """Base error for LangGraph workflow failures."""
+
+
+class JobError(AnswerEvalError):
+    """Base error for job queue / worker failures."""
+
+
+class PermanentJobError(JobError):
+    """Classified permanent failure: must NOT be retried."""
+
+
+class RetryableJobError(JobError):
+    """Classified transient failure: may be retried with backoff."""
+
+
+# ---------------------------------------------------------------------------
 # Configuration & Cache Errors
 # ---------------------------------------------------------------------------
 class ConfigurationError(AnswerEvalError):

@@ -3,6 +3,7 @@
 import base64
 import sys
 from pathlib import Path
+
 import httpx
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -14,7 +15,7 @@ with open(crop_path, "rb") as f:
     b64 = base64.b64encode(f.read()).decode("utf-8")
 data_uri = f"data:image/png;base64,{b64}"
 
-with open("src/answer_eval/prompts/templates/ocr/base.txt", "r", encoding="utf-8") as f:
+with open("src/answer_eval/prompts/templates/ocr/base.txt", encoding="utf-8") as f:
     full_prompt = f.read()
 
 payload = {

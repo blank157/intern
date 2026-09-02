@@ -7,11 +7,12 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from answer_eval.agents.ocr.schemas import OCRResult, OCRUncertainSpan
+from answer_eval.core.config import load_settings
 from answer_eval.core.errors import OCRExtractionError
 from answer_eval.core.logging import get_logger
 from answer_eval.core.provenance import Provenance
 from answer_eval.inference.provider import InferenceProvider
-from answer_eval.inference.types import ImageInput, InferenceRequest, ReasoningMode
+from answer_eval.inference.types import ImageInput, InferenceRequest, InferenceResponse, ReasoningMode
 from answer_eval.processing.segmentation.schemas import QuestionRegion
 from answer_eval.prompts.manager import PromptManager
 
@@ -33,6 +34,10 @@ def count_words_deterministic(text: str) -> int:
     return len(tokens)
 
 
+# Stop reasons that indicate the output budget was exhausted before natural completion.
+GENERATION_LIMIT_REASONS = {"length", "max_tokens", "generation_limit"}
+
+
 class OCRAgent:
     """
     Extracts verbatim student handwriting from question region crops.
@@ -46,6 +51,22 @@ class OCRAgent:
     ) -> None:
         self.provider = inference_provider
         self.prompt_manager = prompt_manager or PromptManager()
+
+    @staticmethod
+    def _validate_response(text: str, resp: InferenceResponse, min_valid_chars: int) -> str:
+        """
+        Validate a raw OCR inference response.
+
+        Returns one of: 'success', 'empty_response', 'suspiciously_tiny', 'truncated'.
+        Empty/whitespace-only output is never treated as a successful OCR result.
+        """
+        if not text:
+            return "empty_response"
+        if len(text) < min_valid_chars:
+            return "suspiciously_tiny"
+        if resp.stop_reason in GENERATION_LIMIT_REASONS:
+            return "truncated"
+        return "success"
 
     async def extract_text(
         self,
@@ -67,6 +88,10 @@ class OCRAgent:
                 details={"region_id": region.region_id},
             )
 
+        # Load centralized OCR inference configuration (thinking off, temp 0, budget, retries)
+        ocr_cfg = load_settings().ocr
+        max_attempts = max(1, ocr_cfg.max_attempts)
+
         # Load prompt template
         prompt_text = self.prompt_manager.get_prompt_template(task_name)
 
@@ -74,9 +99,11 @@ class OCRAgent:
             request_id=request_id,
             prompt=prompt_text,
             images=[ImageInput(image_path=region.crop_image_path, mime_type="image/png")],
-            max_tokens=4096,
-            temperature=0.0,
-            reasoning_mode=ReasoningMode.DIRECT,
+            max_tokens=ocr_cfg.num_predict,
+            temperature=ocr_cfg.temperature,
+            reasoning_mode=(
+                ReasoningMode.DIRECT if not ocr_cfg.thinking_enabled else ReasoningMode.THINKING
+            ),
             metadata={
                 "region_id": region.region_id,
                 "submission_id": region.submission_id,
@@ -85,28 +112,32 @@ class OCRAgent:
         )
 
         try:
-            # Execute primary inference
-            resp = await self.provider.infer(request=req)
-            raw_text = resp.text.strip()
-
-            # Check if output was empty and perform 1 controlled direct retry
-            if not raw_text:
-                logger.warning(
-                    "OCR primary inference returned empty text — attempting controlled direct retry",
-                    region_id=region.region_id,
-                    request_id=request_id,
-                )
-                retry_req = req.model_copy(deep=True)
-                retry_req.request_id = f"{request_id}-retry"
-                retry_req.prompt = (
-                    "Read the handwriting in this image.\n"
-                    "Transcribe every visible handwritten word exactly as written.\n"
-                    "Output ONLY the transcription.\n"
-                    "Do not explain. Do not correct spelling. Do not invent missing text."
-                )
-                retry_req.max_tokens = 4096
-                resp = await self.provider.infer(request=retry_req)
+            # Execute inference with controlled validation retries (max_attempts total).
+            resp: InferenceResponse | None = None
+            raw_text = ""
+            validation_status = "failed"
+            for attempt in range(1, max_attempts + 1):
+                resp = await self.provider.infer(request=req)
                 raw_text = resp.text.strip()
+                validation_status = self._validate_response(raw_text, resp, ocr_cfg.min_valid_chars)
+
+                if validation_status in ("success", "truncated"):
+                    # 'truncated' is deterministic for a fixed budget — retrying wastes time.
+                    break
+
+                if attempt < max_attempts:
+                    logger.warning(
+                        "OCR response invalid — controlled retry with same strict prompt",
+                        region_id=region.region_id,
+                        request_id=request_id,
+                        attempt=attempt,
+                        validation_status=validation_status,
+                        stop_reason=resp.stop_reason,
+                    )
+                    req = req.model_copy(deep=True)
+                    req.request_id = f"{request_id}-retry{attempt}"
+
+            assert resp is not None  # loop always executes at least once
 
             lines: list[str] = []
             uncertain_spans: list[OCRUncertainSpan] = []
@@ -167,7 +198,17 @@ class OCRAgent:
                     )
 
             word_count = count_words_deterministic(raw_text)
-            status = "success" if raw_text else "empty_response"
+
+            # Derive final status from validation — empty output is never a success.
+            flags = list(flags)
+            if validation_status == "success":
+                status = "success"
+            elif raw_text and (validation_status == "truncated" or resp.stop_reason in GENERATION_LIMIT_REASONS):
+                # Text was produced but generation hit the output budget.
+                status = "truncated"
+                flags.append("generation_limit")
+            else:
+                status = "failed"
 
             # Build Provenance
             provenance = Provenance(
@@ -179,7 +220,7 @@ class OCRAgent:
                 source_image_path=region.crop_image_path,
                 model_id=resp.model_id,
                 quantization=resp.quantization,
-                prompt_version="base_v1",
+                prompt_version="base_v2_strict",
                 request_id=request_id,
             )
 
@@ -194,16 +235,38 @@ class OCRAgent:
                 model_metadata={
                     "timing": resp.timing.model_dump(),
                     "usage": resp.usage.model_dump(),
+                    "stop_reason": resp.stop_reason,
+                    "thinking_disabled": resp.thinking_disabled,
+                    "attempts": max_attempts if status == "failed" else 1,
                 },
             )
 
-            logger.info(
-                "OCR extraction completed",
-                region_id=region.region_id,
-                status=status,
-                word_count=word_count,
-                uncertain_spans_count=len(uncertain_spans),
+            thinking_label = (
+                "disabled" if resp.thinking_disabled else ("enabled" if resp.thinking_disabled is False else "unknown")
             )
+            duration_s = round((resp.timing.total_inference_ms or 0.0) / 1000.0, 2)
+            logger.info(
+                "[OCR]",
+                segment=region.region_id,
+                model=resp.model_id,
+                thinking=thinking_label,
+                temperature=req.temperature,
+                output_limit=req.max_tokens,
+                duration=f"{duration_s}s",
+                characters=len(raw_text),
+                words=word_count,
+                attempts=max_attempts if status in ("failed", "truncated") else 1,
+                stop_reason=resp.stop_reason or "unknown",
+                status=status.upper() if status == "failed" else status,
+            )
+            if status == "truncated":
+                logger.warning(
+                    "[OCR] truncated",
+                    segment=region.region_id,
+                    reason="generation_limit",
+                    detail="Output budget exhausted before transcription completed; "
+                    "consider adaptive segmentation for this region.",
+                )
 
             return result
 

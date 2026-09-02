@@ -3,6 +3,7 @@
 import base64
 import sys
 from pathlib import Path
+
 import httpx
 
 sys.stdout.reconfigure(encoding="utf-8")

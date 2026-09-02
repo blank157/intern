@@ -1,12 +1,12 @@
 """Create no-thinking Qwen3-VL model via Ollama REST API, then test OCR."""
 
 import base64
-import sys
-import json
-from pathlib import Path
-from PIL import Image
 import io
+import sys
+from pathlib import Path
+
 import httpx
+from PIL import Image
 
 sys.stdout.reconfigure(encoding="utf-8")
 

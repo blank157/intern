@@ -25,7 +25,7 @@ from tools.test_ui.adapter import (
 
 # Page configuration
 st.set_page_config(
-    page_title="Answer Sheet Perception Pipeline — Test UI",
+    page_title="Answer Sheet Evaluation — Test UI",
     page_icon="📝",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -39,6 +39,23 @@ def get_adapter() -> TestUIAdapter:
 
 
 def main() -> None:
+    # ---------------------------------------------------------------------
+    # Workspace selector — Perception (M4-11) or Grading & Workflow (M12-18)
+    # ---------------------------------------------------------------------
+    with st.sidebar:
+        workspace = st.radio(
+            "Workspace",
+            ["🔍 Perception Pipeline (M4–11)", "🎯 Grading & Workflow (M12–18)"],
+            key="workspace_selector",
+            help="Perception: what did the student write/draw? Grading: how is it evaluated against the rubric?",
+        )
+
+    if workspace.startswith("🎯"):
+        from tools.test_ui.grading_views import render_grading_workspace
+
+        render_grading_workspace()
+        return
+
     adapter = get_adapter()
 
     # Session State Initialization

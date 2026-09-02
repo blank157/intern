@@ -13,6 +13,7 @@ from pydantic import BaseModel, ValidationError
 
 from answer_eval.core.config import load_settings
 from answer_eval.core.errors import (
+    ConfigurationError,
     InferenceError,
     InferenceOutputValidationError,
     InferenceTimeoutError,
@@ -30,6 +31,7 @@ from answer_eval.inference.types import (
     InferenceResponse,
     InferenceTiming,
     MemorySnapshot,
+    ReasoningMode,
     TokenUsage,
 )
 from answer_eval.models.profiles import ModelCapabilities, ModelProfile
@@ -61,8 +63,8 @@ def _get_current_memory() -> MemorySnapshot:
     )
 
 
-def _encode_image_to_data_uri(img: ImageInput) -> str:
-    """Encode ImageInput to data URI string for OpenAI-compatible vision payload."""
+def _load_image_raw(img: ImageInput) -> tuple[bytes, str]:
+    """Load raw image bytes and normalized mime type from an ImageInput."""
     raw_bytes: bytes | None = img.image_bytes
     if raw_bytes is None and img.image_path:
         p = Path(img.image_path)
@@ -87,6 +89,12 @@ def _encode_image_to_data_uri(img: ImageInput) -> str:
         elif ext == ".png":
             mime = "image/png"
 
+    return raw_bytes, mime
+
+
+def _encode_image_to_data_uri(img: ImageInput) -> str:
+    """Encode ImageInput to data URI string for OpenAI-compatible vision payload."""
+    raw_bytes, mime = _load_image_raw(img)
     encoded = base64.b64encode(raw_bytes).decode("utf-8")
     return f"data:{mime};base64,{encoded}"
 
@@ -108,6 +116,14 @@ class OllamaProvider(InferenceProvider):
         settings = load_settings()
         self.base_url = (base_url or os.getenv("OLLAMA_BASE_URL") or settings.ollama.base_url).rstrip("/")
         self.model_name = model_name or os.getenv("VISION_MODEL") or settings.ollama.model
+        # Centralized OCR inference policy (model / num_ctx / num_predict / temperature).
+        self._ocr_cfg = settings.ocr
+
+        # Native (non OpenAI-compatible) API root, used for explicit think=False control.
+        native_root = self.base_url
+        if native_root.endswith("/v1"):
+            native_root = native_root[: -len("/v1")]
+        self._native_base_url = native_root.rstrip("/")
         self.api_key = api_key or os.getenv("OLLAMA_API_KEY") or settings.ollama.api_key
         self.timeout_seconds = float(
             os.getenv("OLLAMA_TIMEOUT", str(timeout_seconds or settings.ollama.timeout_seconds))
@@ -118,10 +134,58 @@ class OllamaProvider(InferenceProvider):
         self.runtime_config: RuntimeConfig | None = None
         self.hardware_profile: HardwareProfile | None = None
         self._client: httpx.AsyncClient | None = None
+        self._client_loop: Any | None = None
+
+        self._log_ocr_config(level="debug")
+
+    def _resolve_ocr_model(self) -> str:
+        """
+        Effective model for OCR/DIRECT-mode requests.
+
+        An empty ocr.model setting means "inherit" the global Ollama model
+        (VISION_MODEL env var / settings.ollama.model).
+        """
+        resolved = self._ocr_cfg.model or self.model_name
+        if not resolved or not resolved.strip():
+            raise ConfigurationError(
+                "No Ollama model configured for OCR inference. "
+                "Set VISION_MODEL or OLLAMA_OCR_MODEL to a non-empty value."
+            )
+        return resolved
+
+    def _log_ocr_config(self, level: str = "info") -> None:
+        """Log the effective OCR inference configuration (no secrets)."""
+        getattr(logger, level)(
+            "[OCR CONFIG]",
+            provider="ollama",
+            model=self._ocr_cfg.model or self.model_name,
+            base_url=self.base_url,
+            num_ctx=self._ocr_cfg.num_ctx,
+            num_predict=self._ocr_cfg.num_predict,
+            temperature=self._ocr_cfg.temperature,
+            thinking_enabled=self._ocr_cfg.thinking_enabled,
+            timeout_seconds=self.timeout_seconds,
+        )
 
     def _get_client(self) -> httpx.AsyncClient:
-        """Create or reuse httpx.AsyncClient."""
-        if self._client is None or self._client.is_closed:
+        """Create or reuse httpx.AsyncClient.
+
+        An AsyncClient is bound to the event loop that created it. The grading
+        worker runs the graph via asyncio.run() in a worker thread, so a fresh
+        loop exists for every call — a client built on an earlier (closed) loop
+        fails with 'Event loop is closed'. Recreate the client whenever the
+        running loop differs from the one it was created on.
+        """
+        import asyncio
+
+        stale_loop = False
+        if self._client is not None and not self._client.is_closed:
+            try:
+                current = asyncio.get_running_loop()
+                stale_loop = current is not self._client_loop
+            except RuntimeError:
+                stale_loop = False
+        if self._client is None or self._client.is_closed or stale_loop:
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
@@ -131,6 +195,10 @@ class OllamaProvider(InferenceProvider):
                 headers=headers,
                 timeout=httpx.Timeout(self.timeout_seconds, connect=10.0),
             )
+            try:
+                self._client_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._client_loop = None
         return self._client
 
     async def initialize(
@@ -152,6 +220,7 @@ class OllamaProvider(InferenceProvider):
             model_name=self.model_name,
             timeout_seconds=self.timeout_seconds,
         )
+        self._log_ocr_config(level="info")
 
     async def health_check(self) -> bool:
         """Verify Ollama is reachable and ready."""
@@ -244,28 +313,37 @@ class OllamaProvider(InferenceProvider):
 
     async def infer(self, request: InferenceRequest) -> InferenceResponse:
         """
-        Execute text or vision inference request against Ollama OpenAI-compatible API.
+        Execute text or vision inference request against Ollama.
+
+        ReasoningMode.DIRECT (used for OCR / deterministic extraction) routes to the
+        native /api/chat endpoint with ``think: false`` so reasoning models such as
+        qwen3-vl do not spend the generation budget on internal thinking.
+        All other modes use the standard OpenAI-compatible /v1/chat/completions API.
         Includes automatic transient retries and timing/memory metadata.
         """
         client = self._get_client()
         t_start = time.perf_counter()
 
-        # Build messages payload
-        messages = self._build_chat_messages(request)
-        model_to_use = self.model_name
-
-        payload: dict[str, Any] = {
-            "model": model_to_use,
-            "messages": messages,
-            "max_tokens": request.max_tokens or 4096,
-            "temperature": request.temperature,
-            "stream": False,
-            "options": {
-                "num_ctx": 16384,
-                "num_predict": request.max_tokens or 4096,
+        direct_mode = request.reasoning_mode == ReasoningMode.DIRECT
+        if direct_mode:
+            url = f"{self._native_base_url}/api/chat"
+            payload = self._build_native_payload(request)
+        else:
+            url = "/chat/completions"
+            messages = self._build_chat_messages(request)
+            payload = {
+                "model": self.model_name,
+                "messages": messages,
+                "max_tokens": request.max_tokens or self._ocr_cfg.num_predict,
                 "temperature": request.temperature,
-            },
-        }
+                "stream": False,
+                "options": {
+                    "num_ctx": self._ocr_cfg.num_ctx,
+                    "num_predict": request.max_tokens or self._ocr_cfg.num_predict,
+                    "temperature": request.temperature,
+                },
+            }
+        model_to_use = payload["model"]
 
         # Safe logging without private image data
         image_count = len(request.images)
@@ -275,28 +353,44 @@ class OllamaProvider(InferenceProvider):
             model=model_to_use,
             images_count=image_count,
             prompt_preview=request.prompt[:60] if request.prompt else "",
+            endpoint=url,
+            thinking_disabled=direct_mode,
+            num_ctx=payload.get("options", {}).get("num_ctx"),
+            num_predict=payload.get("options", {}).get("num_predict"),
+            temperature=payload.get("options", {}).get("temperature"),
         )
 
         last_err: Exception | None = None
         for attempt in range(1, self.max_retries + 2):
             try:
-                resp = await client.post("/chat/completions", json=payload)
+                resp = await client.post(url, json=payload)
 
                 if resp.status_code == 200:
                     data = resp.json()
                     t_end = time.perf_counter()
                     dur_ms = round((t_end - t_start) * 1000, 2)
 
-                    choices = data.get("choices", [])
-                    if not choices:
-                        raise InferenceError("Ollama response contained no completion choices.")
+                    if direct_mode:
+                        # Native /api/chat response format
+                        message = data.get("message") or {}
+                        text_content = message.get("content") or ""
+                        prompt_tokens = int(data.get("prompt_eval_count") or 0)
+                        completion_tokens = int(data.get("eval_count") or 0)
+                        stop_reason = data.get("done_reason")
+                        thinking_disabled_flag: bool | None = True
+                    else:
+                        choices = data.get("choices", [])
+                        if not choices:
+                            raise InferenceError("Ollama response contained no completion choices.")
 
-                    text_content = choices[0].get("message", {}).get("content", "")
+                        text_content = choices[0].get("message", {}).get("content", "")
+                        usage_data = data.get("usage", {})
+                        prompt_tokens = usage_data.get("prompt_tokens", 0)
+                        completion_tokens = usage_data.get("completion_tokens", 0)
+                        stop_reason = choices[0].get("finish_reason")
+                        thinking_disabled_flag = None
 
-                    usage_data = data.get("usage", {})
-                    prompt_tokens = usage_data.get("prompt_tokens", 0)
-                    completion_tokens = usage_data.get("completion_tokens", 0)
-                    total_tokens = usage_data.get("total_tokens", prompt_tokens + completion_tokens)
+                    total_tokens = prompt_tokens + completion_tokens
                     tps = round(completion_tokens / (dur_ms / 1000), 2) if dur_ms > 0 else 0.0
 
                     logger.info(
@@ -305,6 +399,8 @@ class OllamaProvider(InferenceProvider):
                         duration_ms=dur_ms,
                         completion_tokens=completion_tokens,
                         tokens_per_second=tps,
+                        stop_reason=stop_reason,
+                        thinking_disabled=thinking_disabled_flag,
                     )
 
                     return InferenceResponse(
@@ -323,6 +419,8 @@ class OllamaProvider(InferenceProvider):
                             tokens_per_second=tps,
                         ),
                         memory=self.get_memory_usage(),
+                        stop_reason=stop_reason,
+                        thinking_disabled=thinking_disabled_flag,
                     )
 
                 elif resp.status_code == 404:
@@ -495,6 +593,44 @@ class OllamaProvider(InferenceProvider):
             return cleaned[first_bracket : last_bracket + 1]
 
         return cleaned
+
+    def _build_native_payload(self, request: InferenceRequest) -> dict[str, Any]:
+        """
+        Construct native /api/chat payload with thinking explicitly disabled.
+
+        Two complementary mechanisms are used:
+        1. ``think: false`` — honored by Ollama >= 0.9 for models whose chat
+           template supports a thinking toggle.
+        2. An assistant message pre-filled with an already-closed empty
+           ``<think></think>`` block — this works even when the runtime ignores
+           ``think`` (verified on Ollama 0.32.15 + qwen3-vl:4b, whose bundled
+           template has no thinking toggle). Generation resumes *after* the
+           closed block, so no reasoning tokens are produced.
+        """
+        message: dict[str, Any] = {"role": "user", "content": request.prompt}
+        if request.system_prompt:
+            message["content"] = f"{request.system_prompt}\n\n{request.prompt}"
+
+        if request.images:
+            message["images"] = [
+                base64.b64encode(raw).decode("utf-8")
+                for raw, _mime in (_load_image_raw(img) for img in request.images)
+            ]
+
+        messages: list[dict[str, Any]] = [message]
+        messages.append({"role": "assistant", "content": "<think>\n\n</think>\n\n"})
+
+        return {
+            "model": self._resolve_ocr_model(),
+            "messages": messages,
+            "think": False,
+            "stream": False,
+            "options": {
+                "num_ctx": self._ocr_cfg.num_ctx,
+                "num_predict": request.max_tokens or self._ocr_cfg.num_predict,
+                "temperature": request.temperature,
+            },
+        }
 
     def _build_chat_messages(self, request: InferenceRequest) -> list[dict[str, Any]]:
         """Construct OpenAI-compatible chat messages array for vision/text."""

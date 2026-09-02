@@ -3,6 +3,7 @@
 import base64
 import sys
 from pathlib import Path
+
 import httpx
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -12,9 +13,9 @@ prompt = "Transcribe every visible handwritten word in this image exactly as wri
 
 with httpx.Client(base_url="http://localhost:11434", timeout=120.0) as client:
     for idx, cp in enumerate(crops, start=1):
-        print(f"\n==========================================")
+        print("\n==========================================")
         print(f"CROP {idx}: {cp.name}")
-        print(f"==========================================")
+        print("==========================================")
         with open(cp, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("utf-8")
 

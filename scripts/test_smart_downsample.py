@@ -1,11 +1,12 @@
 """Test fix: max_width=1024 + num_predict=4096 on large crop, and original height for thin crops."""
 
 import base64
+import io
 import sys
 from pathlib import Path
-from PIL import Image
-import io
+
 import httpx
+from PIL import Image
 
 sys.stdout.reconfigure(encoding="utf-8")
 

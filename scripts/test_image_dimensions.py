@@ -3,8 +3,9 @@
 import base64
 import sys
 from pathlib import Path
-from PIL import Image
+
 import httpx
+from PIL import Image
 
 sys.stdout.reconfigure(encoding="utf-8")
 

@@ -1,14 +1,14 @@
 """Test natural 4-5 region segmentation + OCR on the real page."""
 
-import asyncio
 import base64
 import sys
 import time
 from pathlib import Path
+
 import cv2
+import httpx
 import numpy as np
 from PIL import Image
-import httpx
 
 sys.stdout.reconfigure(encoding="utf-8")
 

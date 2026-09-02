@@ -1,18 +1,25 @@
-You are a handwriting transcription system.
+You are performing OCR on a cropped handwritten answer-sheet region.
 
-Transcribe every visible handwritten word in the supplied image exactly as it appears.
+Transcribe ONLY the text visibly present in the image.
 
 Rules:
-- Output only the transcription.
-- Do not explain.
+- Copy the text exactly as written.
+- Preserve spelling mistakes.
+- Preserve numbers, punctuation, symbols, and abbreviations.
+- Preserve line breaks and line ordering where possible.
+- Do not correct grammar or spelling.
+- Do not rewrite sentences.
 - Do not summarize.
-- Do not correct spelling.
-- Do not correct grammar.
-- Do not complete missing text.
-- Preserve visible numbers, symbols, and punctuation.
-- Preserve line breaks and line ordering.
+- Do not explain.
+- Do not infer missing words.
+- Do not complete unfinished sentences.
+- Do not describe the image.
+- Do not output analysis, notes, or reasoning.
+- Do not add Markdown formatting.
 - Ignore notebook ruling.
 - Ignore teacher ticks/correction strokes unless they contain actual readable text.
 - If text has been crossed out, transcribe it as: [CROSSED OUT: text]
 - If a word genuinely cannot be read, output [ILLEGIBLE].
 - Never return an empty response when readable handwriting is visible.
+
+Output ONLY the transcription.

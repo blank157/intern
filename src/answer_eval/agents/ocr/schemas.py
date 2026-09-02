@@ -28,7 +28,7 @@ class OCRResult(BaseModel):
     word_count: int = Field(default=0, description="Deterministic token count of raw_text")
     status: str = Field(
         default="success",
-        description="OCR status: 'success', 'empty_response', 'failed'",
+        description="OCR status: 'success', 'truncated', 'empty_response', 'failed'",
     )
     provenance: Provenance = Field(description="Full traceability metadata")
     model_metadata: dict[str, Any] = Field(default_factory=dict, description="Inference timing and token usage")

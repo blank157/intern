@@ -30,7 +30,11 @@ class InferenceRequest(BaseModel):
     prompt: str = Field(description="User prompt text")
     system_prompt: str | None = Field(default=None, description="System instructions")
     images: list[ImageInput] = Field(default_factory=list, description="Input images for multimodal inference")
-    max_tokens: int = Field(default=2048, description="Maximum completion tokens")
+    max_tokens: int | None = Field(
+        default=None,
+        description="Maximum completion tokens. None = use the provider's configured "
+        "OCR generation budget (settings: ocr.num_predict).",
+    )
     temperature: float = Field(default=0.1, description="Sampling temperature")
     reasoning_mode: ReasoningMode = Field(default=ReasoningMode.DIRECT, description="Requested reasoning mode")
     json_schema: dict[str, Any] | None = Field(
@@ -82,4 +86,13 @@ class InferenceResponse(BaseModel):
     warnings: list[str] = Field(
         default_factory=list,
         description="Any runtime warnings (e.g. downgraded thinking, fallback)",
+    )
+    stop_reason: str | None = Field(
+        default=None,
+        description="Finish/stop reason from backend (e.g. 'stop', 'length', 'load'). "
+        "'length' indicates generation-limit truncation.",
+    )
+    thinking_disabled: bool | None = Field(
+        default=None,
+        description="Whether reasoning/thinking was explicitly disabled for this request (if known).",
     )

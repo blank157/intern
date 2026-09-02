@@ -1,9 +1,7 @@
 """End-to-end live pipeline verification on the real student answer sheet with Qwen3-VL 4B."""
 
 import asyncio
-import json
 import sys
-import time
 from pathlib import Path
 
 # Add src to sys.path for local module resolution
@@ -11,6 +9,8 @@ src_dir = Path(__file__).resolve().parent.parent / "src"
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
+from answer_eval.agents.ocr.agent import OCRAgent
+from answer_eval.agents.reconstruction.service import ReconstructionService
 from answer_eval.core.config import load_settings
 from answer_eval.hardware.detector import detect_hardware
 from answer_eval.inference.factory import create_inference_provider
@@ -20,10 +20,6 @@ from answer_eval.processing.image.schemas import PreprocessingConfig
 from answer_eval.processing.pdf.processor import PDFProcessor
 from answer_eval.processing.segmentation.segmenter import QuestionSegmenter
 from answer_eval.runtime.planner import RuntimePlanner
-from answer_eval.agents.ocr.agent import OCRAgent
-from answer_eval.agents.diagram.agent import DiagramAgent
-from answer_eval.agents.reconstruction.service import ReconstructionService
-from answer_eval.processing.segmentation.schemas import RegionType
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -87,7 +83,7 @@ async def main():
     print(f"\n[6] Running Verbatim OCR on {len(seg_res.regions)} regions...")
     ocr_agent = OCRAgent(inference_provider=provider)
     ocr_results = []
-    
+
     for idx, region in enumerate(seg_res.regions, 1):
         print(f"\n    --- Processing {region.region_id} ({idx}/{len(seg_res.regions)}) ---")
         ocr_res = await ocr_agent.extract_text(region)

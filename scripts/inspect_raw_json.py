@@ -1,9 +1,9 @@
 """Inspect the exact JSON response returned by Ollama on REG-P01-01."""
 
 import base64
-import json
 import sys
 from pathlib import Path
+
 import httpx
 
 sys.stdout.reconfigure(encoding="utf-8")

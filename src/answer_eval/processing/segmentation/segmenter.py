@@ -210,8 +210,22 @@ class QuestionSegmenter:
         h, w = gray.shape[:2]
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
+        # Scans carry full-height page borders / margin rules and speckle noise.
+        # A vertical border puts ink on EVERY row, which previously fused the
+        # whole page into ONE band (all answers merged into a single region).
+        # Strip: edge columns -> long vertical structures -> isolated speckle.
+        border_free = int(w * 0.02)
+        cleaned = thresh.copy()
+        cleaned[:, :border_free] = 0
+        cleaned[:, w - border_free:] = 0
+        vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(25, h // 40)))
+        vertical = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, vertical_kernel)
+        cleaned = cv2.subtract(cleaned, vertical)
+        speckle_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, speckle_kernel)
+
         # Horizontal projection: fraction of ink pixels per row
-        row_sums = np.sum(thresh == 255, axis=1) / float(w)
+        row_sums = np.sum(cleaned == 255, axis=1) / float(w)
 
         # Detect active ink bands with sensitive energy threshold
         is_active = row_sums > energy_threshold
@@ -226,12 +240,12 @@ class QuestionSegmenter:
             elif not active and in_band:
                 in_band = False
                 # Verify band contains meaningful ink (ignore single isolated noise pixels)
-                band_ink = np.sum(thresh[start_y:y, :] == 255)
+                band_ink = np.sum(cleaned[start_y:y, :] == 255)
                 if band_ink >= 50:
                     raw_bands.append((start_y, y))
 
         if in_band:
-            band_ink = np.sum(thresh[start_y:h, :] == 255)
+            band_ink = np.sum(cleaned[start_y:h, :] == 255)
             if band_ink >= 50:
                 raw_bands.append((start_y, h))
 

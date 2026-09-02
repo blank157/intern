@@ -1,10 +1,10 @@
 """Direct Qwen3-VL OCR Diagnostic on real crop."""
 
 import base64
-import json
 import sys
 import time
 from pathlib import Path
+
 import httpx
 from PIL import Image
 
