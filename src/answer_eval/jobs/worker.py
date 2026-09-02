@@ -6,6 +6,9 @@ live worker. Failures are classified retryable/permanent; permanent failures and
 exhausted retries are retained in the durable store (dead-letter state).
 """
 
+import os
+import threading
+import uuid
 import threading
 import uuid
 from collections.abc import Callable
@@ -59,6 +62,7 @@ class EvaluationWorker:
         poll_interval_s: float = 0.2,
         retry_policy: RetryPolicy | None = None,
         initial_state_hook: Callable[[dict], dict] | None = None,
+        max_node_skips: int = 10,
     ) -> None:
         self.store = store
         self.queue = queue
@@ -68,6 +72,13 @@ class EvaluationWorker:
         self.heartbeat_interval_s = heartbeat_interval_s
         self.poll_interval_s = poll_interval_s
         self.retry_policy = retry_policy or RetryPolicy()
+        # Multi-node safety: several machines can share one durable job store
+        # (same DATABASE_URL). A claimed job whose pdf_path does not exist on
+        # THIS machine is likely owned by another node — release it back to the
+        # queue instead of running it into a permanent "PDF not found" failure.
+        # After max_node_skips releases with no node able to access the file,
+        # the job is dead-lettered with a clear error.
+        self.max_node_skips = max_node_skips
         # Optional hook to enrich/override the initial workflow state (e.g. tests
         # injecting pre-computed canonical answers, or resuming from artifacts).
         self.initial_state_hook = initial_state_hook
@@ -104,6 +115,12 @@ class EvaluationWorker:
 
         if job is None:
             return None
+
+        # Multi-node guard: if the PDF is not accessible on this machine, the
+        # job very likely belongs to another node sharing this job store.
+        # Release it (bounded) instead of permanently failing it.
+        if job.pdf_path and not os.path.isfile(job.pdf_path):
+            return self._release_unrunnable(job)
 
         job = self.store.update_job(
             job.job_id,
@@ -153,6 +170,60 @@ class EvaluationWorker:
                 import time
 
                 time.sleep(1.0)
+
+    def _release_unrunnable(self, job: JobRecord) -> JobRecord | None:
+        """Put a claimed job back because its PDF is missing on this machine.
+
+        The release does NOT consume a retry attempt and is bounded by
+        ``max_node_skips``: once exceeded, the job is dead-lettered as a
+        permanent failure (no node could access the file).
+        """
+        skips = job.node_skips + 1
+        if skips > self.max_node_skips:
+            logger.error(
+                "Job dead-lettered: PDF never became accessible on any worker node",
+                job_id=job.job_id,
+                submission_id=job.submission_id,
+                pdf_path=job.pdf_path,
+                skips=skips,
+            )
+            self._handle_failure(
+                job,
+                PermanentJobError(
+                    f"[validate_submission] PDF not accessible from any worker node "
+                    f"after {skips} attempts: {job.pdf_path}"
+                ),
+            )
+            return self.store.get_job(job.job_id)
+
+        delay = min(self.retry_policy.delay_for_attempt(1), 5.0)
+        # NOTE: deliberately NOT re-enqueued on the (process-local) queue — the
+        # delay is enforced by next_attempt_at, which the store-level claim
+        # fallback respects. Local in-memory queues ignore that delay.
+        self.store.update_job(
+            job.job_id,
+            status=JobStatus.queued,
+            worker_id=None,
+            lease_expires_at=None,
+            next_attempt_at=self.retry_policy.next_attempt_at(1),
+            node_skips=skips,
+        )
+        mark = getattr(self.store, "mark_submission", None)
+        if callable(mark):
+            try:
+                mark(job.submission_id, "queued")
+            except Exception:  # noqa: BLE001 - UI mirroring is best-effort
+                logger.warning("mark_submission failed", submission_id=job.submission_id)
+        logger.warning(
+            "Job released: PDF not accessible on this node — another node may own the file",
+            job_id=job.job_id,
+            submission_id=job.submission_id,
+            pdf_path=job.pdf_path,
+            worker_id=self.worker_id,
+            skip=skips,
+            retry_in_s=round(delay, 2),
+        )
+        return None
 
     def _heartbeat_loop(self, job_id: str, stop: threading.Event) -> None:
         while not stop.wait(self.heartbeat_interval_s):

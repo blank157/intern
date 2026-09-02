@@ -174,53 +174,68 @@ def _start_embedded_worker(job_store, settings: ApiSettings) -> threading.Thread
     EVALAI_EMBEDDED_WORKER=1). One terminal boots the API, the durable job
     store, and a worker that claims jobs from Postgres (Redis optional). This
     makes the whole pipeline run on one computer with no second process.
+
+    Default-on for single-PC mode: without a LOCAL worker, any other machine
+    sharing the same DATABASE_URL claims (and permanently fails) this API's
+    jobs because the PDF paths only exist here. Set EVALAI_EMBEDDED_WORKER=0
+    to opt out on coordinator-only deployments.
     """
-    if os.getenv("EVALAI_EMBEDDED_WORKER") != "1":
+    flag = os.getenv("EVALAI_EMBEDDED_WORKER", "1").strip().lower()
+    if flag in ("0", "false", "no", "off"):
         return None
 
     def run() -> None:
         time.sleep(3.0)  # let uvicorn bind the socket before self-registration
-        from answer_eval.jobs import EvaluationWorker
-        from answer_eval.jobs.queue import create_queue
-        from answer_eval.jobs.worker_main import _heartbeat_loop, _register
-
-        host = settings.host if settings.host not in ("", "0.0.0.0") else "127.0.0.1"
-        coordinator = f"http://{host}:{settings.port}"
-        logger.info("Embedded worker: registering with coordinator", coordinator=coordinator)
-        worker_id, token = _register(coordinator, os.getenv("EVALAI_WORKER_ID"))
-        stop = threading.Event()
-        heartbeat_thread = threading.Thread(
-            target=_heartbeat_loop, args=(coordinator, worker_id, token, stop), daemon=True
-        )
-        heartbeat_thread.start()
-
-        queue = create_queue(os.getenv("REDIS_URL") or None)
-
-        def graph_factory():
-            import asyncio
-
-            from answer_eval.inference.factory import create_inference_provider
-            from answer_eval.models.registry import get_model_registry
-            from answer_eval.workflow.graph import build_evaluation_graph
-
-            profile = get_model_registry().get_active_profile(None)
-            provider = create_inference_provider(profile)
-            asyncio.run(provider.initialize(model=profile, config=None, hardware=None))  # type: ignore[arg-type]
-            return build_evaluation_graph(provider)
-
-        worker = EvaluationWorker(
-            store=job_store,
-            queue=queue,
-            graph_factory=graph_factory,
-            worker_id=worker_id,
-            poll_interval_s=1.0,
-        )
-        logger.info("Embedded single-PC worker started", worker_id=worker_id)
+        stop: threading.Event | None = None
         try:
+            from answer_eval.jobs import EvaluationWorker
+            from answer_eval.jobs.queue import create_queue
+            from answer_eval.jobs.worker_main import _heartbeat_loop, _register
+
+            host = settings.host if settings.host not in ("", "0.0.0.0") else "127.0.0.1"
+            coordinator = f"http://{host}:{settings.port}"
+            logger.info("Embedded worker: registering with coordinator", coordinator=coordinator)
+            worker_id, token = _register(coordinator, os.getenv("EVALAI_WORKER_ID"))
+            stop = threading.Event()
+            heartbeat_thread = threading.Thread(
+                target=_heartbeat_loop, args=(coordinator, worker_id, token, stop), daemon=True
+            )
+            heartbeat_thread.start()
+
+            queue = create_queue(os.getenv("REDIS_URL") or None)
+
+            def graph_factory():
+                import asyncio
+
+                from answer_eval.inference.factory import create_inference_provider
+                from answer_eval.models.registry import get_model_registry
+                from answer_eval.workflow.graph import build_evaluation_graph
+
+                profile = get_model_registry().get_active_profile(None)
+                provider = create_inference_provider(profile)
+                asyncio.run(provider.initialize(model=profile, config=None, hardware=None))  # type: ignore[arg-type]
+                return build_evaluation_graph(provider)
+
+            worker = EvaluationWorker(
+                store=job_store,
+                queue=queue,
+                graph_factory=graph_factory,
+                worker_id=worker_id,
+                # Fast local poll: claim this API's own enqueues before any
+                # remote worker sharing the job store can grab them.
+                poll_interval_s=0.2,
+            )
+            logger.info("Embedded single-PC worker started", worker_id=worker_id)
             worker.run_forever()
+        except Exception:  # noqa: BLE001 - worker must never crash API startup
+            logger.exception(
+                "Embedded worker failed to start — evaluations will only run when a "
+                "standalone worker claims jobs (or restart with EVALAI_EMBEDDED_WORKER=1)"
+            )
         finally:
-            stop.set()
-            logger.info("Embedded worker stopped", worker_id=worker_id)
+            if stop is not None:
+                stop.set()
+                logger.info("Embedded worker stopped")
 
     thread = threading.Thread(target=run, name="embedded-worker", daemon=True)
     thread.start()

@@ -114,41 +114,56 @@ async def persist_resolved(
     resolved_rows: list[dict[str, Any]],
     rubric_snapshots: dict[int, dict[str, Any]] | None = None,
 ) -> int:
-    version_row = await pool.fetchval(
-        "select coalesce(max(version), 0) + 1 from question_policies where assessment_id = $1",
-        _uuid(assessment_id),
-    )
-    version = int(version_row or 1)
-    async with pool.acquire() as connection, connection.transaction():
-        await connection.execute(
-            "delete from question_policies where assessment_id = $1", _uuid(assessment_id)
-        )
-        for row in resolved_rows:
-            number = row["question_number"]
-            await connection.execute(
-                """
-                insert into question_policies
-                    (assessment_id, version, question_number, strictness_level,
-                     minimum_words, word_count_mode, trigger_shortfall_words, marks_deducted,
-                     diagram_required, min_diagrams, missing_diagram_deductions,
-                     source_rule_ids, rubric_snapshot)
-                values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-                """,
-                _uuid(assessment_id),
-                version,
-                number,
-                row["strictness_level"],
-                row["minimum_words"],
-                row["word_count_mode"],
-                row["trigger_shortfall_words"],
-                row["marks_deducted"],
-                row["diagram_required"],
-                row["min_diagrams"],
-                row["missing_diagram_deductions"],
-                row["source_rule_ids"],
-                (rubric_snapshots or {}).get(number, {}),
-            )
-    return version
+    """Store a new resolved policy version and return its version number.
+
+    The UI saves policies with several near-simultaneous PUTs; the version must
+    therefore be computed INSIDE the write transaction (otherwise two requests
+    read the same max(version) and collide on the unique key), with a retry on
+    the rare residual race between concurrent transactions.
+    """
+    last_exc: Exception | None = None
+    for _attempt in range(3):
+        try:
+            async with pool.acquire() as connection, connection.transaction():
+                version_row = await connection.fetchval(
+                    "select coalesce(max(version), 0) + 1 from question_policies where assessment_id = $1",
+                    _uuid(assessment_id),
+                )
+                version = int(version_row or 1)
+                await connection.execute(
+                    "delete from question_policies where assessment_id = $1", _uuid(assessment_id)
+                )
+                for row in resolved_rows:
+                    number = row["question_number"]
+                    await connection.execute(
+                        """
+                        insert into question_policies
+                            (assessment_id, version, question_number, strictness_level,
+                             minimum_words, word_count_mode, trigger_shortfall_words, marks_deducted,
+                             diagram_required, min_diagrams, missing_diagram_deductions,
+                             source_rule_ids, rubric_snapshot)
+                        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                        """,
+                        _uuid(assessment_id),
+                        version,
+                        number,
+                        row["strictness_level"],
+                        row["minimum_words"],
+                        row["word_count_mode"],
+                        row["trigger_shortfall_words"],
+                        row["marks_deducted"],
+                        row["diagram_required"],
+                        row["min_diagrams"],
+                        row["missing_diagram_deductions"],
+                        row["source_rule_ids"],
+                        (rubric_snapshots or {}).get(number, {}),
+                    )
+            return version
+        except asyncpg.exceptions.UniqueViolationError as exc:  # pragma: no cover - race window
+            last_exc = exc
+            continue
+    assert last_exc is not None
+    raise last_exc
 
 
 async def get_resolved(

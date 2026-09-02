@@ -81,7 +81,12 @@ def validate_submission(state: EvaluationWorkflowState) -> dict:
         return _error(dict(state), "validate_submission", ValueError("No PDF path supplied"), permanent=True)
     if not os.path.isfile(pdf_path):
         return _error(
-            dict(state), "validate_submission", FileNotFoundError(f"PDF not found: {pdf_path}"), permanent=True
+            dict(state),
+            "validate_submission",
+            FileNotFoundError(
+                f"PDF not found: {pdf_path} (worker cwd: {os.getcwd()})"
+            ),
+            permanent=True,
         )
     for qid, r in (state.get("rubrics") or {}).items():
         try:

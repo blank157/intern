@@ -230,6 +230,16 @@ async def begin_evaluation(
                 logger.warning("Skipping submission without a stored PDF", submission_id=item["id"])
                 continue
             pdf_path = str(Path(storage_root) / object_key)
+            if not Path(pdf_path).is_file():
+                # Never enqueue a job that cannot possibly run: the durable
+                # store is shared across machines, and a job whose file is
+                # missing HERE would be claimed and failed elsewhere.
+                logger.warning(
+                    "Skipping submission whose stored PDF is missing on this node",
+                    submission_id=item["id"],
+                    pdf_path=pdf_path,
+                )
+                continue
             job_service.submit(
                 submission_id=item["id"],
                 pdf_path=pdf_path,

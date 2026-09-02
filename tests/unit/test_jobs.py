@@ -273,3 +273,68 @@ def test_waiting_for_review_then_teacher_resume_completes(job_env) -> None:
     final = worker.run_once()
     assert final.status == JobStatus.completed
     assert final.result_summary["human_reviewed"] == ["Q4"]
+
+
+def test_worker_releases_job_when_pdf_not_on_this_node(job_env) -> None:
+    """Multi-node safety: a claimed job whose PDF is missing on THIS machine is
+    released back to the queue (another node sharing the store may own the
+    file) instead of being permanently failed."""
+    store, queue, service, rubric, tmp_path = job_env
+
+    def _boom():
+        raise AssertionError("_execute must never run for a released job")
+
+    job, _ = service.submit("SUB-Foreign", str(tmp_path / "ghost.pdf"), {"Q4": rubric})
+    assert not (tmp_path / "ghost.pdf").exists()
+
+    no_backoff = RetryPolicy(max_attempts=3, initial_delay_s=0.0, backoff_factor=1.0)
+    worker = EvaluationWorker(store, queue, _boom, worker_id="w-node-a", retry_policy=no_backoff)
+    assert worker.run_once() is None  # released, not executed
+
+    released = store.get_job(job.job_id)
+    assert released is not None and released.status == JobStatus.queued
+    assert released.node_skips == 1
+    assert released.next_attempt_at is not None
+
+    # The file shows up (e.g. the owning node's enqueue) -> job runs to completion.
+    (tmp_path / "ghost.pdf").write_bytes(b"%PDF-1.4 now-available")
+    store.update_job(job.job_id, next_attempt_at=None)
+    queue.enqueue(job.job_id)
+    from tests.unit.test_workflow_graph import make_graph
+
+    app = make_graph([json.loads(json.dumps(GOOD_EVAL))] * 2)
+    owner = EvaluationWorker(
+        store, queue, lambda: app, worker_id="w-owner", initial_state_hook=_inject_ready_state
+    )
+    done = owner.run_once()
+    assert done is not None and done.status == JobStatus.completed
+
+
+def test_worker_dead_letters_job_when_no_node_can_read_pdf(job_env) -> None:
+    """Once the node-skip budget is exhausted the job is dead-lettered with a
+    clear permanent error instead of looping forever."""
+    store, queue, service, rubric, tmp_path = job_env
+
+    def _boom():
+        raise AssertionError("_execute must never run for a released job")
+
+    job, _ = service.submit("SUB-Lost", str(tmp_path / "never.pdf"), {"Q4": rubric})
+    worker = EvaluationWorker(
+        store,
+        queue,
+        _boom,
+        worker_id="w-node-a",
+        max_node_skips=2,
+        retry_policy=RetryPolicy(max_attempts=3, initial_delay_s=0.0, backoff_factor=1.0),
+    )
+
+    for expected_skip in (1, 2):
+        assert worker.run_once() is None
+        current = store.get_job(job.job_id)
+        assert current is not None and current.status == JobStatus.queued
+        assert current.node_skips == expected_skip
+
+    done = worker.run_once()
+    assert done is not None and done.status == JobStatus.failed
+    assert done.failures[-1].permanent is True
+    assert done.error and "not accessible from any worker node" in done.error

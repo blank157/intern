@@ -81,6 +81,15 @@ class JobRecord(BaseModel):
     )
 
     input_hash: str | None = None
+    node_skips: int = Field(
+        default=0,
+        description=(
+            "How many times workers released this job because the PDF was not accessible"
+            " on their machine (multi-node job-store sharing). Bounded by the worker's"
+            " max_node_skips before the job is dead-lettered."
+        ),
+    )
+    input_hash: str | None = None
     result_summary: dict[str, Any] | None = None
     failures: list[FailureRecord] = Field(default_factory=list)
     error: str | None = None
